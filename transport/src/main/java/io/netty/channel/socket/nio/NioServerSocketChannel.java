@@ -22,6 +22,7 @@ import io.netty.channel.ChannelMetadata;
 import io.netty.channel.nio.AbstractNioMessageChannel;
 import io.netty.channel.socket.DefaultServerSocketChannelConfig;
 import io.netty.channel.socket.ServerSocketChannelConfig;
+import io.netty.util.internal.PlatformDependent;
 import io.netty.util.internal.logging.InternalLogger;
 import io.netty.util.internal.logging.InternalLoggerFactory;
 
@@ -31,6 +32,7 @@ import java.net.SocketAddress;
 import java.nio.channels.SelectionKey;
 import java.nio.channels.ServerSocketChannel;
 import java.nio.channels.SocketChannel;
+import java.util.concurrent.TimeUnit;
 
 /**
  * A {@link io.netty.channel.socket.ServerSocketChannel} implementation which uses
@@ -53,6 +55,8 @@ public class NioServerSocketChannel extends AbstractNioMessageChannel
     }
 
     private final ServerSocketChannelConfig config;
+
+    private Runnable acceptExceptionHandler;
 
     /**
      * Create a new instance
@@ -109,23 +113,34 @@ public class NioServerSocketChannel extends AbstractNioMessageChannel
 
     @Override
     protected int doReadMessages(MessageBuf<Object> buf) throws Exception {
-        SocketChannel ch = javaChannel().accept();
-
-        try {
+         SocketChannel ch = null;
+         try {
+            ch = javaChannel().accept();
             if (ch != null) {
                 buf.add(new NioSocketChannel(this, null, ch));
                 return 1;
             }
         } catch (Throwable t) {
-            logger.warn("Failed to create a new channel from an accepted socket.", t);
+            logger.warn("Failed to accept socket and create a new channel.", t);
 
             try {
                 ch.close();
             } catch (Throwable t2) {
                 logger.warn("Failed to close a socket.", t2);
             }
+            if (config().isAutoRead()) {
+                if (acceptExceptionHandler == null) {
+                    acceptExceptionHandler = new Runnable() {
+                        @Override
+                        public void run() {
+                            config().setAutoRead(true);
+                        }
+                    };
+                }
+                config().setAutoRead(false);
+                eventLoop().schedule(acceptExceptionHandler, 1, TimeUnit.SECONDS);
+            }
         }
-
         return 0;
     }
 

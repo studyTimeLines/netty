@@ -30,6 +30,7 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.SocketAddress;
 import java.net.SocketTimeoutException;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 
@@ -57,6 +58,7 @@ public class OioServerSocketChannel extends AbstractOioMessageChannel
     final ServerSocket socket;
     final Lock shutdownLock = new ReentrantLock();
     private final OioServerSocketChannelConfig config;
+    private Runnable acceptExceptionHandler;
 
     /**
      * Create a new instance with an new {@link Socket}
@@ -170,13 +172,25 @@ public class OioServerSocketChannel extends AbstractOioMessageChannel
         } catch (SocketTimeoutException e) {
             // Expected
         } catch (Throwable t) {
-            logger.warn("Failed to create a new channel from an accepted socket.", t);
+            logger.warn("Failed to accept socket and create a new channel.", t);
             if (s != null) {
                 try {
                     s.close();
                 } catch (Throwable t2) {
                     logger.warn("Failed to close a socket.", t2);
                 }
+            }
+            if (config().isAutoRead()) {
+                if (acceptExceptionHandler == null) {
+                    acceptExceptionHandler = new Runnable() {
+                        @Override
+                        public void run() {
+                            config().setAutoRead(true);
+                        }
+                    };
+                }
+                config().setAutoRead(false);
+                eventLoop().schedule(acceptExceptionHandler, 1, TimeUnit.SECONDS);
             }
         }
 

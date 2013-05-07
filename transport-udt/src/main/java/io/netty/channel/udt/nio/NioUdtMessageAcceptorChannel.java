@@ -21,6 +21,8 @@ import io.netty.buffer.BufType;
 import io.netty.buffer.MessageBuf;
 import io.netty.channel.ChannelMetadata;
 
+import java.util.concurrent.TimeUnit;
+
 /**
  * Message Channel Acceptor for UDT Datagrams.
  */
@@ -28,6 +30,7 @@ public class NioUdtMessageAcceptorChannel extends NioUdtAcceptorChannel {
 
     private static final ChannelMetadata METADATA = new ChannelMetadata(
             BufType.MESSAGE, false);
+    private Runnable acceptExceptionHandler;
 
     public NioUdtMessageAcceptorChannel() {
         super(TypeUDT.DATAGRAM);
@@ -35,14 +38,41 @@ public class NioUdtMessageAcceptorChannel extends NioUdtAcceptorChannel {
 
     @Override
     protected int doReadMessages(final MessageBuf<Object> buf) throws Exception {
-        final SocketChannelUDT channelUDT = javaChannel().accept();
-        if (channelUDT == null) {
-            return 0;
-        } else {
-            buf.add(new NioUdtMessageConnectorChannel(this, channelUDT
-                    .socketUDT().id(), channelUDT));
-            return 1;
+        SocketChannelUDT channelUDT = null;
+        try {
+            channelUDT = javaChannel().accept();
+            if (channelUDT == null) {
+                return 0;
+            } else {
+                buf.add(new NioUdtMessageConnectorChannel(this, channelUDT
+                        .socketUDT().id(), channelUDT));
+                return 1;
+            }
+        } catch (Throwable t) {
+            logger.warn("Failed to accept socket and create a new channel.", t);
+
+            if (channelUDT != null) {
+                try {
+                    channelUDT.close();
+                } catch (Throwable t2) {
+                    logger.warn("Failed to close a socket.", t2);
+                }
+            }
+
+            if (config().isAutoRead()) {
+                if (acceptExceptionHandler == null) {
+                    acceptExceptionHandler = new Runnable() {
+                        @Override
+                        public void run() {
+                            config().setAutoRead(true);
+                        }
+                    };
+                }
+                config().setAutoRead(false);
+                eventLoop().schedule(acceptExceptionHandler, 1, TimeUnit.SECONDS);
+            }
         }
+        return 0;
     }
 
     @Override

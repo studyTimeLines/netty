@@ -37,6 +37,7 @@ import java.nio.channels.AsynchronousChannelGroup;
 import java.nio.channels.AsynchronousCloseException;
 import java.nio.channels.AsynchronousServerSocketChannel;
 import java.nio.channels.AsynchronousSocketChannel;
+import java.util.concurrent.TimeUnit;
 
 /**
  * {@link ServerSocketChannel} implementation which uses NIO2.
@@ -54,6 +55,7 @@ public class AioServerSocketChannel extends AbstractAioChannel implements Server
     private final AioServerSocketChannelConfig config;
     private boolean acceptInProgress;
     private boolean closed;
+    private Runnable acceptExceptionHandler;
 
     private static AsynchronousServerSocketChannel newSocket(AsynchronousChannelGroup group) {
         try {
@@ -205,7 +207,7 @@ public class AioServerSocketChannel extends AbstractAioChannel implements Server
         }
 
         @Override
-        protected void failed0(Throwable t, AioServerSocketChannel channel) {
+        protected void failed0(Throwable t, final AioServerSocketChannel channel) {
             channel.acceptInProgress = false;
             boolean asyncClosed = false;
             if (t instanceof AsynchronousCloseException) {
@@ -215,7 +217,19 @@ public class AioServerSocketChannel extends AbstractAioChannel implements Server
             // check if the exception was thrown because the channel was closed before
             // log something
             if (channel.isOpen() && ! asyncClosed) {
-                logger.warn("Failed to create a new channel from an accepted socket.", t);
+                logger.warn("Failed to accept socket and create a new channel.", t);
+                if (channel.config().isAutoRead()) {
+                    if (channel.acceptExceptionHandler == null) {
+                        channel.acceptExceptionHandler = new Runnable() {
+                            @Override
+                            public void run() {
+                                channel.config().setAutoRead(true);
+                            }
+                        };
+                    }
+                    channel.config().setAutoRead(false);
+                    channel.eventLoop().schedule(channel.acceptExceptionHandler, 1, TimeUnit.SECONDS);
+                }
             }
         }
     }

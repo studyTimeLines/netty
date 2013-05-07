@@ -26,6 +26,8 @@ import io.netty.channel.ChannelPromise;
 import io.netty.channel.nio.AbstractNioMessageChannel;
 import io.netty.channel.sctp.DefaultSctpServerChannelConfig;
 import io.netty.channel.sctp.SctpServerChannelConfig;
+import io.netty.util.internal.logging.InternalLogger;
+import io.netty.util.internal.logging.InternalLoggerFactory;
 
 import java.io.IOException;
 import java.net.InetAddress;
@@ -36,6 +38,7 @@ import java.util.Collections;
 import java.util.Iterator;
 import java.util.LinkedHashSet;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
 
 /**
  * {@link io.netty.channel.sctp.SctpServerChannel} implementation which use non-blocking mode to accept new
@@ -47,7 +50,8 @@ import java.util.Set;
 public class NioSctpServerChannel extends AbstractNioMessageChannel
         implements io.netty.channel.sctp.SctpServerChannel {
     private static final ChannelMetadata METADATA = new ChannelMetadata(BufType.MESSAGE, false);
-
+    private static final InternalLogger logger =
+            InternalLoggerFactory.getInstance(NioSctpServerChannel.class);
     private static SctpServerChannel newSocket() {
         try {
             return SctpServerChannel.open();
@@ -58,6 +62,7 @@ public class NioSctpServerChannel extends AbstractNioMessageChannel
     }
 
     private final SctpServerChannelConfig config;
+    private Runnable acceptExceptionHandler;
 
     /**
      * Create a new instance
@@ -136,12 +141,39 @@ public class NioSctpServerChannel extends AbstractNioMessageChannel
 
     @Override
     protected int doReadMessages(MessageBuf<Object> buf) throws Exception {
-        SctpChannel ch = javaChannel().accept();
-        if (ch == null) {
-            return 0;
+        SctpChannel ch = null;
+        try {
+            ch = javaChannel().accept();
+            if (ch == null) {
+               return 0;
+            }
+            buf.add(new NioSctpChannel(this, null, ch));
+            return 1;
+        } catch (Throwable t) {
+            logger.warn("Failed to accept socket and create a new channel.", t);
+
+            if (ch != null) {
+                try {
+                    ch.close();
+                } catch (Throwable t2) {
+                    logger.warn("Failed to close a socket.", t2);
+                }
+            }
+
+            if (config().isAutoRead()) {
+                if (acceptExceptionHandler == null) {
+                    acceptExceptionHandler = new Runnable() {
+                        @Override
+                        public void run() {
+                            config().setAutoRead(true);
+                        }
+                    };
+                }
+                config().setAutoRead(false);
+                eventLoop().schedule(acceptExceptionHandler, 1, TimeUnit.SECONDS);
+            }
         }
-        buf.add(new NioSctpChannel(this, null, ch));
-        return 1;
+        return 0;
     }
 
     @Override
